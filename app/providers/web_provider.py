@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from app.providers.base import SearchProvider
 from app.models.lead import CompanyCandidate, SourceType, DiscoveryQuery
 
-_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SalesHunterBot/1.0; research purposes)"}
+_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 _DUCKDUCKGO_HOSTS = {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"}
 
 
@@ -64,23 +64,40 @@ class WebSearchProvider(SearchProvider):
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "lxml")
             results = []
-            for a_tag in soup.find_all("a", class_="result__a"):
-                href = a_tag.get("href", "")
+            for result_div in soup.find_all("div", class_="result__body"):
+                a_tag = result_div.find("a", class_="result__a")
+                if not a_tag:
+                    continue
                 title = a_tag.get_text(strip=True)
-                if not href or not title:
+                href = a_tag.get("href", "")
+                # Extract real URL from DuckDuckGo redirect: //duckduckgo.com/l/?uddg=<encoded_url>
+                real_url = ""
+                if "uddg=" in href:
+                    try:
+                        # Normalize: //duckduckgo.com/... -> https://duckduckgo.com/...
+                        normalized = href if href.startswith("http") else "https:" + href
+                        qs = parse_qs(urlparse(normalized).query)
+                        uddg = qs.get("uddg", [""])[0]
+                        real_url = unquote(uddg)
+                    except Exception:
+                        pass
+                if not real_url:
+                    real_url = href
+                if not real_url or not title:
                     continue
-                # Filter out DuckDuckGo's own links and ad links
-                parsed = urlparse(href)
-                host = parsed.netloc.lower().lstrip("www.")
-                if host in _DUCKDUCKGO_HOSTS:
+                if "duckduckgo.com" in real_url:
                     continue
-                if href.startswith("/") or "duckduckgo.com" in href:
+                # Normalize to root domain URL
+                parsed = urlparse(real_url)
+                if parsed.scheme and parsed.netloc:
+                    clean_url = f"{parsed.scheme}://{parsed.netloc}"
+                else:
                     continue
-                results.append({"title": title, "url": href})
+                results.append({"title": title, "url": clean_url})
             self.logger.debug(f"DuckDuckGo query '{query}' returned {len(results)} results")
             return results
         except Exception as e:
-            self.logger.warning(f"DuckDuckGo search failed for query '{query}': {e}")
+            self.logger.error(f"DuckDuckGo search failed for query '{query}': {e}", exc_info=True)
             return []
 
     @classmethod
