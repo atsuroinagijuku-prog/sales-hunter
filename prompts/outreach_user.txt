@@ -1,0 +1,8 @@
+以下の企業に営業メールを作成してください。
+
+会社名: {company_name}
+担当者名: {contact_name}
+業種: {industry}
+備考: {notes}
+
+サービス概要: {offer_summary}

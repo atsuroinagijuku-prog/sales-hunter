@@ -1,0 +1,58 @@
+app_name: sales-hunter
+environment: development
+
+sender:
+  name: 吉田篤朗
+  email: ""  # set in .env as GMAIL_FROM_ADDRESS
+  company: 三吉商事
+  offer_summary: "AIによる業務効率化支援（営業代行・データ整形・EC登録補助など）"
+  call_to_action: "まずは無料でお試しいただけます。30分のオンライン相談も歓迎です。"
+  calendar_link: ""
+
+outreach:
+  daily_send_limit: 20
+  max_followups: 2
+  dry_run: false
+
+targeting:
+  allowed_industries:
+    - IT・SaaS
+    - マーケティング
+    - 製造業
+    - 小売業
+    - 人材
+    - 不動産
+    - コンサルティング
+    - EC・通販
+    - 広告
+  blocked_domains:
+    - gmail.com
+    - yahoo.co.jp
+    - hotmail.com
+  blocked_keywords:
+    - 詐欺
+    - 違法
+
+score_rules:
+  has_email: 20
+  has_website: 10
+  allowed_industry: 15
+  notes_keywords:
+    外注: 20
+    代行: 20
+    自動化: 20
+    効率化: 20
+    マーケ: 15
+    営業: 15
+    リスト: 15
+    入力: 10
+  btob_signal: 5
+  notes_max_bonus: 40
+
+llm:
+  provider: gemini
+  model: gemini-2.5-flash
+
+logging:
+  level: INFO
+  log_dir: data/logs

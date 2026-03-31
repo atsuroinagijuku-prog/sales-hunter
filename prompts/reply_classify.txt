@@ -1,0 +1,12 @@
+以下のメール返信を分類してください。
+
+返信文:
+{reply_text}
+
+以下のラベルから最も適切なものを1つ選び、ラベル名のみを出力してください:
+- interested
+- not_interested
+- question
+- unsubscribe
+- out_of_office
+- other
