@@ -1,5 +1,6 @@
 import logging
 import os
+import glob as glob_module
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -71,6 +72,26 @@ class SalesHunterEngine:
         self.classifier = ReplyClassifier(config, self.llm)
         self.followup_agent = FollowupMessageAgent(config, self.llm)
         self.report_agent = ReportAgent(config)
+
+        # Discovery components
+        from app.services.website_fetcher import WebsiteFetcher
+        from app.services.contact_finder import ContactFinder
+        from app.agents.company_profiler import CompanyProfiler
+        from app.services.lead_scorer import LeadDiscoveryScorer
+        from app.services.lead_repository import LeadRepository
+        from app.agents.discovery_report import DiscoveryReportAgent
+
+        discovery_cfg = config.get("discovery", {})
+        self.website_fetcher = WebsiteFetcher(
+            timeout=discovery_cfg.get("request_timeout_seconds", 10),
+            retry_count=discovery_cfg.get("request_retry_count", 2),
+            delay_seconds=discovery_cfg.get("delay_between_requests", 1.0),
+        )
+        self.contact_finder = ContactFinder(fetcher=self.website_fetcher)
+        self.profiler = CompanyProfiler(llm_client=self.llm, use_llm=False)
+        self.discovery_scorer = LeadDiscoveryScorer(config=discovery_cfg)
+        self.lead_repo = LeadRepository(output_dir=config.get("output_dir", "data/output"))
+        self.discovery_report_agent = DiscoveryReportAgent(output_dir=config.get("output_dir", "data/output"))
 
         logger.info(
             f"SalesHunterEngine initialized (dry_run={dry_run})"
@@ -169,3 +190,163 @@ class SalesHunterEngine:
     def generate_report(self) -> dict:
         all_prospects = self.crm.load_all()
         return self.report_agent.generate(all_prospects)
+
+    # ------------------------------------------------------------------
+    # Lead Discovery methods
+    # ------------------------------------------------------------------
+
+    def discover(
+        self,
+        source: str = "csv",
+        input_path: str = None,
+        queries_path: str = None,
+        limit: int = None,
+        dry_run: bool = False,
+    ) -> int:
+        from app.providers.csv_provider import CsvSeedProvider
+        from app.providers.web_provider import WebSearchProvider
+        from app.agents.company_discovery import CompanyDiscoveryAgent
+        from app.models.lead import LeadRecord
+        import uuid
+        from datetime import datetime
+
+        discovery_cfg = self.config.get("discovery", {})
+
+        providers = []
+        if source in ("csv", "both"):
+            csv_path = input_path or "data/input/seed_companies.csv"
+            providers.append(CsvSeedProvider(filepath=csv_path))
+        if source in ("web", "both"):
+            q_path = queries_path or "data/input/search_queries.txt"
+            providers.append(WebSearchProvider.from_file(q_path, config=discovery_cfg))
+
+        discovery_agent = CompanyDiscoveryAgent(providers=providers, config=discovery_cfg)
+        candidates = discovery_agent.discover(limit=limit)
+
+        logger.info(f"Processing {len(candidates)} candidates (dry_run={dry_run})")
+        count = 0
+
+        for candidate in candidates:
+            try:
+                if dry_run:
+                    logger.info(f"[DRY RUN] Would process: {candidate.company_name} ({candidate.homepage_url})")
+                    lead = LeadRecord(
+                        id=candidate.id,
+                        company_name=candidate.company_name,
+                        homepage_url=candidate.homepage_url,
+                        source_type=candidate.source_type,
+                        source_query=candidate.source_query,
+                        industry=candidate.industry,
+                    )
+                    score_result = self.discovery_scorer.score(lead)
+                    lead = lead.model_copy(update={
+                        "score": score_result.score,
+                        "priority": score_result.priority,
+                        "score_reason": score_result.score_reason,
+                    })
+                    self.lead_repo.upsert(lead)
+                    count += 1
+                    continue
+
+                # Fetch website
+                if candidate.homepage_url:
+                    snapshot = self.website_fetcher.fetch(candidate.homepage_url)
+                else:
+                    from app.models.lead import WebsiteSnapshot
+                    snapshot = WebsiteSnapshot(url="", fetch_success=False, error="No URL provided")
+
+                # Find contacts
+                contact_info = self.contact_finder.find(snapshot)
+
+                # Profile company
+                profile = self.profiler.profile(snapshot)
+
+                # Build LeadRecord
+                lead = LeadRecord(
+                    id=candidate.id,
+                    company_name=candidate.company_name,
+                    homepage_url=candidate.homepage_url,
+                    source_type=candidate.source_type,
+                    source_query=candidate.source_query,
+                    industry=candidate.industry,
+                    business_summary=profile.business_summary,
+                    contact_email=contact_info.contact_email,
+                    contact_page_url=contact_info.contact_page_url,
+                    company_page_url=contact_info.company_page_url,
+                    phone_number=contact_info.phone_number,
+                    likely_b2b=profile.likely_b2b,
+                    likely_needs_outsourcing=profile.likely_needs_outsourcing,
+                    profile_notes=profile.profile_notes,
+                    fetch_success=snapshot.fetch_success,
+                    error=snapshot.error,
+                )
+
+                # Score
+                score_result = self.discovery_scorer.score(lead)
+                lead = lead.model_copy(update={
+                    "score": score_result.score,
+                    "priority": score_result.priority,
+                    "score_reason": score_result.score_reason,
+                })
+
+                self.lead_repo.upsert(lead)
+                count += 1
+                logger.info(
+                    f"Processed: {lead.company_name} | score={lead.score:.1f} "
+                    f"priority={lead.priority.value} | email={lead.contact_email or '-'}"
+                )
+
+            except Exception as e:
+                logger.error(f"Error processing candidate {candidate.company_name}: {e}")
+
+        # Persist results
+        self.lead_repo.save_csv()
+        self.lead_repo.save_json()
+
+        return count
+
+    def score_leads(self) -> int:
+        # Load leads from latest JSON in data/output/
+        output_dir = self.config.get("output_dir", "data/output")
+        json_files = sorted(
+            glob_module.glob(os.path.join(output_dir, "leads_*.json")),
+            reverse=True,
+        )
+        if not json_files:
+            logger.warning("No leads JSON found to score.")
+            return 0
+
+        latest = json_files[0]
+        self.lead_repo.load_json(latest)
+        leads = self.lead_repo.get_all()
+
+        for lead in leads:
+            score_result = self.discovery_scorer.score(lead)
+            updated = lead.model_copy(update={
+                "score": score_result.score,
+                "priority": score_result.priority,
+                "score_reason": score_result.score_reason,
+            })
+            self.lead_repo.upsert(updated)
+
+        self.lead_repo.save_csv()
+        self.lead_repo.save_json()
+        logger.info(f"Re-scored {len(leads)} leads.")
+        return len(leads)
+
+    def discovery_report(self) -> dict:
+        output_dir = self.config.get("output_dir", "data/output")
+        json_files = sorted(
+            glob_module.glob(os.path.join(output_dir, "leads_*.json")),
+            reverse=True,
+        )
+        if not json_files:
+            logger.warning("No leads JSON found to generate report.")
+            return {}
+
+        latest = json_files[0]
+        self.lead_repo.load_json(latest)
+        leads = self.lead_repo.get_all()
+
+        summary = self.discovery_report_agent.generate(leads)
+        return summary.model_dump()

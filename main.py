@@ -148,5 +148,71 @@ def generate_report(config_path: str):
     click.echo(f"Report generated with {report['total']} prospects.")
 
 
+@cli.command()
+@click.option(
+    "--source",
+    default="csv",
+    type=click.Choice(["csv", "web", "both"]),
+    show_default=True,
+    help="Source to discover leads from",
+)
+@click.option(
+    "--input",
+    "input_path",
+    default="data/input/seed_companies.csv",
+    show_default=True,
+    help="Path to seed companies CSV (used with --source csv or both)",
+)
+@click.option(
+    "--queries",
+    "queries_path",
+    default="data/input/search_queries.txt",
+    show_default=True,
+    help="Path to search queries file (used with --source web or both)",
+)
+@click.option("--dry-run", is_flag=True, help="Discover and score without fetching websites")
+@click.option("--limit", default=None, type=int, help="Max candidates to process")
+@click.option(
+    "--config",
+    "config_path",
+    default=DEFAULT_CONFIG,
+    show_default=True,
+    help="Path to config YAML file",
+)
+@click.option("--output", default=None, help="Output directory (overrides config)")
+def discover(source, input_path, queries_path, dry_run, limit, config_path, output):
+    """Discover leads from CSV seed list or web search."""
+    config = load_config(config_path)
+    if dry_run:
+        config["dry_run"] = True
+    if output:
+        config["output_dir"] = output
+    engine = SalesHunterEngine(config, dry_run=dry_run)
+    count = engine.discover(
+        source=source,
+        input_path=input_path,
+        queries_path=queries_path,
+        limit=limit,
+        dry_run=dry_run,
+    )
+    click.echo(f"Discovered {count} leads.")
+
+
+@cli.command("discovery-report")
+@click.option(
+    "--config",
+    "config_path",
+    default=DEFAULT_CONFIG,
+    show_default=True,
+    help="Path to config YAML file",
+)
+def discovery_report(config_path: str):
+    """Generate discovery report from saved leads."""
+    config = load_config(config_path)
+    engine = SalesHunterEngine(config)
+    report = engine.discovery_report()
+    click.echo(f"Report generated.")
+
+
 if __name__ == "__main__":
     cli()

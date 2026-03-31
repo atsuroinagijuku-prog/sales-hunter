@@ -56,3 +56,43 @@ llm:
 logging:
   level: INFO
   log_dir: data/logs
+
+# Lead Discovery settings
+discovery:
+  request_timeout_seconds: 10
+  request_retry_count: 2
+  max_pages_per_site: 3
+  delay_between_requests: 1.0
+  blocked_domains:
+    - gmail.com
+    - yahoo.co.jp
+    - hotmail.com
+    - example.com
+  target_industries:
+    - IT・SaaS
+    - マーケティング
+    - 製造業
+    - 小売業
+    - EC・通販
+    - 広告
+    - コンサルティング
+    - 人材
+  target_keywords:
+    - 外注
+    - 代行
+    - 業務効率化
+    - 自動化
+    - 営業支援
+  excluded_keywords:
+    - 詐欺
+    - 違法
+  score_rules:
+    has_website: 20
+    has_email: 20
+    has_contact_page: 15
+    likely_b2b: 15
+    has_company_page: 10
+    likely_outsourcing: 10
+    has_phone: 5
+    keyword_bonus_per_hit: 5
+    keyword_bonus_max: 20
